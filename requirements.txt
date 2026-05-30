@@ -1,0 +1,5 @@
+# Kalshi Weather Trading Daemon — Python dependencies
+# Python 3.9+ recommended. Everything else used is in the standard library.
+
+requests>=2.31.0       # HTTP client for Kalshi, NOAA, and Open-Meteo APIs
+cryptography>=42.0.0   # RSA-PSS request signing for the Kalshi API
