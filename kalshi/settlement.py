@@ -190,6 +190,10 @@ def _log_settlement(pos, result, won, pnl, actual_temp, is_paper):
         "pnl_cents": pnl,
         "forecast": pos.get("forecast"),
         "fair_cents": pos.get("fair_cents"),
+        # Side-specific blended fair in cents == model's P(this position wins) * 100.
+        # Logged explicitly so calibration analysis (analyze_calibration.py) has a
+        # clean predicted-probability column to score against the realized outcome.
+        "predicted_fair_cents": pos.get("fair"),
         "raw_edge": pos.get("raw_edge"),
         "adjusted_edge": pos.get("adjusted_edge"),
         "confidence": pos.get("confidence"),
