@@ -108,9 +108,10 @@ Cities: ATL, BOS, DAL, DC, HOU, MIN, NOLA, OKC, PHX, SEA, SFO
 
 ## Configuration
 
-> **Important — what is and isn't configurable via `.env` today:**
-> Only `PAPER_TRADING`, the two `KALSHI_*` credentials, the two `TELEGRAM_*` variables, and the optional `WEATHER_ACCURACY_PATH` are currently read from `.env` (see `kalshi/config.py` and `weather_providers.py`).
-> The trading and risk parameters below are defined as **constants in `kalshi/config.py`** — edit them there to change behavior. Making them `.env`-overridable is on the [Roadmap](#roadmap).
+> **What's read from `.env`:**
+> Credentials and mode (`PAPER_TRADING`, the two `KALSHI_*`, the two `TELEGRAM_*`, and the optional `WEATHER_ACCURACY_PATH`), **plus all of the trading and risk knobs in the tables below** — each is overridable by an environment variable of the same name (see `kalshi/config.py`). An unset variable keeps the coded default shown here; an unparseable value is ignored with a warning rather than crashing the daemon.
+>
+> For the paper/live split, the **mode sets the default** and an explicit env var wins over it (e.g. `MIN_EDGE_CENTS=12` overrides whichever paper/live default would otherwise apply). Model-internal parameters (forecast σ, NOAA staleness penalty, etc.) are intentionally *not* env-overridable — tune those in code.
 
 Several thresholds differ between **paper** and **live** mode (paper loosens filters for more opportunity volume).
 
@@ -161,7 +162,7 @@ Live trading is **high risk**. Only proceed if you:
 Before setting `PAPER_TRADING=false`, verify by hand:
 - `KALSHI_API_KEY_ID` and `KALSHI_PRIVATE_KEY_PATH` are correct and the daemon prints a sane **real** balance on startup
 - Network connectivity to `api.elections.kalshi.com`, `api.weather.gov`, and `api.open-meteo.com`
-- The risk constants in `kalshi/config.py` (`MAX_DAILY_LOSS_CENTS`, `MAX_CONTRACTS`, etc.) match your risk tolerance
+- The risk limits (`MAX_DAILY_LOSS_CENTS`, `MAX_CONTRACTS`, etc.) — set in `.env` or as constants in `kalshi/config.py` — match your risk tolerance
 - You have a small balance funded ($10–20)
 
 > An automated `preflight_checklist.py` is on the [Roadmap](#roadmap) but is **not** implemented yet.
@@ -326,7 +327,7 @@ cat kalshi_pnl.json | jq
 cat paper_trades.jsonl | jq -c '{ts: .timestamp, ticker, side, status, pnl_cents}'
 ```
 
-> A `paper_summary.py` summarizer (win rate, ROI) and a `analyze_calibration.py` reliability report are on the [Roadmap](#roadmap); the settlement log already contains the predicted-vs-actual pairs they need.
+> Run `python analyze_calibration.py` for a Brier-score / reliability / realized-vs-predicted-edge report over the settlement log (prints a friendly "no data yet" message on a fresh checkout). A `paper_summary.py` (win rate, ROI) summarizer is still on the [Roadmap](#roadmap).
 
 ---
 
@@ -345,7 +346,7 @@ cat paper_trades.jsonl | jq -c '{ts: .timestamp, ticker, side, status, pnl_cents
 ### "CIRCUIT BREAKER ... stopping trades"
 - A daily or weekly loss limit (including worst-case open exposure) was reached
 - Trading is paused for the period
-- Adjust `MAX_DAILY_LOSS_CENTS` / `MAX_WEEKLY_LOSS_CENTS` in `kalshi/config.py`
+- Adjust `MAX_DAILY_LOSS_CENTS` / `MAX_WEEKLY_LOSS_CENTS` (in `.env` or `kalshi/config.py`)
 
 ### No opportunities found
 - Markets may be efficiently priced (the 30/70 blend deliberately shrinks toward the market)
@@ -376,11 +377,13 @@ cat paper_trades.jsonl | jq -c '{ts: .timestamp, ticker, side, status, pnl_cents
 ```
 5. *(Optional)* Add a `CITY_STD_DEV['NYC']` entry and any `MODEL_BIAS` offsets in `kalshi/config.py`.
 
-### Smoke Tests
-
-There is no automated test suite yet (see [Roadmap](#roadmap)). For now:
+### Tests
 
 ```bash
+# Unit tests over the pure math, .env parser, and settlement-window logic
+pip install -r requirements-dev.txt
+python -m pytest
+
 # Exercise the weather ensemble across all cities (hits live forecast APIs)
 python -c "from weather_providers import test_ensemble; test_ensemble()"
 
@@ -392,13 +395,17 @@ python kalshi_unified.py
 
 ## Roadmap
 
-Honest list of what is **planned but not yet implemented**:
+**Recently shipped:**
 
-- **Test suite** — `pytest` over the pure math (`normal_cdf`, `market_adjusted_fair`, `fair_probability`, `kelly_size`) + GitHub Actions CI
+- **Test suite + CI** — `pytest` over the pure math (`normal_cdf`, `market_adjusted_fair`, `fair_probability`, `kelly_size`), the `.env` parser, and the settlement-window logic, on GitHub Actions (Python 3.9 / 3.11 / 3.12)
 - **Calibration report** — `analyze_calibration.py` over `kalshi_settlement_log.jsonl`: Brier score, reliability diagram, realized-vs-predicted edge
+- **Local-standard-time settlement window** — the actual-high lookup now uses the city's NWS climatological (LST) day, matching how Kalshi settles, instead of the UTC calendar day
+- **`.env`-overridable limits** — every trading/risk knob in the tables above is overridable from the environment (env var name == constant name)
+
+**Planned but not yet implemented:**
+
 - **Backtest analyzer** — consumer for `kalshi_backtest_log.jsonl` (skip-reason histogram, edge distribution, threshold sweeps)
 - **Paper summary** — `paper_summary.py` (win rate, ROI) and `preflight_checklist.py`
-- **`.env`-configurable limits** — wire the trading/risk constants through `os.getenv`
 - **Web dashboard** — a read-only FastAPI + React view of positions, equity curve, and reliability metrics
 - **Execution realism** — model basic slippage / partial fills in the paper simulator
 

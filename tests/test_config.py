@@ -4,13 +4,19 @@ The .env parsing tests pin the safety fix: an inline `# comment` after a value
 must not leak into the value (which previously could flip PAPER_TRADING off and
 silently enable live trading).
 """
+import importlib
 import os
 from datetime import datetime
 
+import pytest
+
+import kalshi.config as config
 from kalshi.config import (
     _strip_inline_comment,
     _parse_env_line,
     _load_env,
+    _env_int,
+    _env_float,
     get_season,
     get_city_std_dev,
     get_correlation_group,
@@ -119,3 +125,99 @@ def test_get_city_std_dev_unknown_city_falls_back():
 def test_get_correlation_group_known_and_unknown():
     assert get_correlation_group("HOU") == "gulf_south"
     assert get_correlation_group("ZZZ") == "ZZZ"   # unconfigured city maps to itself
+
+
+# ── typed env readers (_env_int / _env_float) ────────────────────────────
+
+_SENTINEL = "ENV_READER_TEST_UNIQUE"
+
+
+def test_env_int_unset_blank_returns_default(monkeypatch):
+    monkeypatch.delenv(_SENTINEL, raising=False)
+    assert _env_int(_SENTINEL, 8) == 8
+    monkeypatch.setenv(_SENTINEL, "   ")
+    assert _env_int(_SENTINEL, 8) == 8
+
+
+def test_env_int_parses_value_and_trims_whitespace(monkeypatch):
+    monkeypatch.setenv(_SENTINEL, "  3 ")
+    assert _env_int(_SENTINEL, 8) == 3
+
+
+def test_env_int_invalid_falls_back_to_default(monkeypatch):
+    monkeypatch.setenv(_SENTINEL, "not-an-int")
+    assert _env_int(_SENTINEL, 8) == 8
+
+
+def test_env_float_parses_and_falls_back(monkeypatch):
+    monkeypatch.setenv(_SENTINEL, "0.42")
+    assert _env_float(_SENTINEL, 0.3) == pytest.approx(0.42)
+    monkeypatch.setenv(_SENTINEL, "garbage")
+    assert _env_float(_SENTINEL, 0.3) == pytest.approx(0.3)
+    monkeypatch.delenv(_SENTINEL, raising=False)
+    assert _env_float(_SENTINEL, 0.3) == pytest.approx(0.3)
+
+
+def test_env_int_out_of_range_falls_back(monkeypatch):
+    monkeypatch.setenv(_SENTINEL, "-5")
+    assert _env_int(_SENTINEL, 8, minimum=0) == 8           # below min -> default
+    monkeypatch.setenv(_SENTINEL, "5")
+    assert _env_int(_SENTINEL, 8, minimum=0, maximum=10) == 5   # in range -> used
+
+
+def test_env_float_rejects_non_finite(monkeypatch):
+    # float() accepts these without raising — they must still be rejected so they
+    # can't silently defeat a money-path check (e.g. MAX_FAIR_MARKET_RATIO=inf).
+    for bad in ("inf", "-inf", "nan", "Infinity"):
+        monkeypatch.setenv(_SENTINEL, bad)
+        assert _env_float(_SENTINEL, 0.3) == pytest.approx(0.3)
+
+
+def test_env_float_out_of_range_falls_back(monkeypatch):
+    monkeypatch.setenv(_SENTINEL, "5.0")
+    assert _env_float(_SENTINEL, 0.3, minimum=0.0, maximum=1.0) == pytest.approx(0.3)
+    monkeypatch.setenv(_SENTINEL, "-0.1")
+    assert _env_float(_SENTINEL, 0.3, minimum=0.0, maximum=1.0) == pytest.approx(0.3)
+    monkeypatch.setenv(_SENTINEL, "0.8")
+    assert _env_float(_SENTINEL, 0.3, minimum=0.0, maximum=1.0) == pytest.approx(0.8)
+
+
+# ── end-to-end: env overrides reach the module-level constants ───────────
+
+def test_env_overrides_apply_to_constants_on_import(monkeypatch):
+    """Setting the env var and re-importing config overrides the constant;
+    an unset env restores the coded default. This is the behavior PENDING #2
+    was about — editing these in .env now actually does something."""
+    monkeypatch.setenv("MAX_CONTRACTS", "3")
+    monkeypatch.setenv("MAX_DAILY_LOSS_CENTS", "250")
+    monkeypatch.setenv("MODEL_WEIGHT", "0.42")
+    monkeypatch.setenv("MAX_FAIR_MARKET_RATIO", "2.5")
+    try:
+        importlib.reload(config)
+        assert config.MAX_CONTRACTS == 3
+        assert config.MAX_DAILY_LOSS_CENTS == 250
+        assert config.MODEL_WEIGHT == pytest.approx(0.42)
+        assert config.MAX_FAIR_MARKET_RATIO == pytest.approx(2.5)
+    finally:
+        # Restore the module to its env-free state so test order can't leak.
+        for var in ("MAX_CONTRACTS", "MAX_DAILY_LOSS_CENTS", "MODEL_WEIGHT", "MAX_FAIR_MARKET_RATIO"):
+            monkeypatch.delenv(var, raising=False)
+        importlib.reload(config)
+    assert config.MAX_CONTRACTS == 8   # default restored
+
+
+def test_out_of_range_money_path_override_is_rejected_on_import(monkeypatch):
+    """A nonsensical money-path knob must fall back to the safe default, not
+    silently corrupt pricing / defeat a risk check."""
+    monkeypatch.setenv("MODEL_WEIGHT", "5")             # outside [0, 1]
+    monkeypatch.setenv("MAX_FAIR_MARKET_RATIO", "inf")  # would disable the ratio cap
+    monkeypatch.setenv("MAX_CONTRACTS", "-3")           # negative count
+    try:
+        importlib.reload(config)
+        assert config.MODEL_WEIGHT == pytest.approx(0.3)         # rejected -> default
+        assert config.MAX_FAIR_MARKET_RATIO == pytest.approx(3.5)  # rejected -> default
+        assert config.MAX_CONTRACTS == 8                          # rejected -> default
+    finally:
+        for var in ("MODEL_WEIGHT", "MAX_FAIR_MARKET_RATIO", "MAX_CONTRACTS"):
+            monkeypatch.delenv(var, raising=False)
+        importlib.reload(config)
