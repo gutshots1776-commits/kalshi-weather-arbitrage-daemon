@@ -3,7 +3,9 @@ Configuration constants, environment loading, and city/series data.
 
 All trading parameters, risk limits, and static data live here.
 """
+import math
 import os
+import sys
 from pathlib import Path
 
 # ── Environment loading ──────────────────────────────────────────────────
@@ -71,6 +73,64 @@ def _load_env(env_path=None):
 
 _load_env()
 
+
+# ── Typed env-var readers ────────────────────────────────────────────────
+# Operator-facing trading/risk knobs below are read through these so they can
+# be overridden from the environment (or .env). An unset var keeps the coded
+# default; an unparseable, non-finite, or out-of-range value is ignored with a
+# warning and the safe coded default is used instead — a fat-fingered knob must
+# never silently corrupt money-path pricing or defeat a risk check.
+
+def _reject(name, raw, default, expected):
+    print(f"[config] ignoring {name}={raw!r} (expected {expected}); using default {default}",
+          file=sys.stderr)
+    return default
+
+
+def _range_desc(kind, minimum, maximum):
+    """Human-readable range description for the warning message."""
+    if minimum is not None and maximum is not None:
+        return f"{kind} in [{minimum}, {maximum}]"
+    if minimum is not None:
+        return f"{kind} >= {minimum}"
+    if maximum is not None:
+        return f"{kind} <= {maximum}"
+    return kind
+
+
+def _env_int(name, default, minimum=None, maximum=None):
+    """Return ``int`` env var ``name``; fall back to ``default`` if unset/blank,
+    unparseable, or outside the inclusive ``[minimum, maximum]`` range."""
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        value = int(raw.strip())
+    except ValueError:
+        return _reject(name, raw, default, _range_desc("an integer", minimum, maximum))
+    if (minimum is not None and value < minimum) or (maximum is not None and value > maximum):
+        return _reject(name, raw, default, _range_desc("an integer", minimum, maximum))
+    return value
+
+
+def _env_float(name, default, minimum=None, maximum=None):
+    """Return ``float`` env var ``name``; fall back to ``default`` if unset/blank,
+    unparseable, non-finite (``inf``/``nan`` parse cleanly but must be rejected),
+    or outside the inclusive ``[minimum, maximum]`` range."""
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        value = float(raw.strip())
+    except ValueError:
+        return _reject(name, raw, default, _range_desc("a number", minimum, maximum))
+    if not math.isfinite(value):
+        return _reject(name, raw, default, "a finite number")
+    if (minimum is not None and value < minimum) or (maximum is not None and value > maximum):
+        return _reject(name, raw, default, _range_desc("a number", minimum, maximum))
+    return value
+
+
 # ── Paper trading mode ───────────────────────────────────────────────────
 
 PAPER_TRADING = os.getenv("PAPER_TRADING", "true").lower() == "true"
@@ -92,38 +152,45 @@ KALSHI_API_KEY_ID = os.getenv("KALSHI_API_KEY_ID", "")
 KALSHI_PRIVATE_KEY_PATH = os.getenv("KALSHI_PRIVATE_KEY_PATH", "")
 
 # ── Trading parameters ───────────────────────────────────────────────────
+# Operator-facing limits: env-overridable (env var name == constant name).
 
-MAX_CONTRACTS = 8
-MAX_COST_PER_TRADE = 500          # cents ($5)
-MAX_OPEN_POSITIONS = 20
-MAX_DAILY_TRADES = 40
-MIN_VOLUME = 10
-POLL_INTERVAL = 900               # 15 min
+MAX_CONTRACTS = _env_int("MAX_CONTRACTS", 8, minimum=0)
+MAX_COST_PER_TRADE = _env_int("MAX_COST_PER_TRADE", 500, minimum=0)   # cents ($5)
+MAX_OPEN_POSITIONS = _env_int("MAX_OPEN_POSITIONS", 20, minimum=0)
+MAX_DAILY_TRADES = _env_int("MAX_DAILY_TRADES", 40, minimum=0)
+MIN_VOLUME = _env_int("MIN_VOLUME", 10, minimum=0)
+MAX_EDGE_CENTS = _env_int("MAX_EDGE_CENTS", 60, minimum=0)            # edge sanity cap
+MAX_SPREAD = _env_int("MAX_SPREAD", 30, minimum=0)                    # max yes_ask - yes_bid before skipping
+
+# Model/internal parameters: intentionally NOT env-overridable (tune in code).
+POLL_INTERVAL = 900               # legacy; the daemon uses get_poll_interval()
 FORECAST_STD_DEV = 1.1            # baseline forecast RMSE in °F
 MIN_PROVIDER_COUNT = 1
 MAX_LOG_LINES = 200
-MAX_EDGE_CENTS = 60               # edge sanity cap
-MAX_SPREAD = 30                   # max yes_ask - yes_bid before skipping
 NOAA_STALE_HOURS = 6
 NOAA_STALE_PENALTY = 0.5
 
-# Paper vs live: paper mode loosens filters for more opportunity volume
+# Paper vs live: paper mode loosens filters for more opportunity volume. Each
+# default below is overridable via the matching env var (env wins over mode).
 if PAPER_TRADING:
-    MIN_EDGE_CENTS = 10
-    MIN_YES_PRICE = 5
-    MIN_NO_PRICE = 5
-    MIN_CONFIDENCE_SCORE = 0.5
-    MODEL_WEIGHT = 0.3
-    MAX_DISAGREEMENT_CENTS = 40
-    MAX_FAIR_MARKET_RATIO = 3.5
+    _defaults = dict(MIN_EDGE_CENTS=10, MIN_YES_PRICE=5, MIN_NO_PRICE=5,
+                     MIN_CONFIDENCE_SCORE=0.5, MODEL_WEIGHT=0.3,
+                     MAX_DISAGREEMENT_CENTS=40, MAX_FAIR_MARKET_RATIO=3.5)
 else:
-    MIN_EDGE_CENTS = 15
-    MIN_CONFIDENCE_SCORE = 0.6
-    MODEL_WEIGHT = 0.3
-    MIN_YES_PRICE = 15
-    MIN_NO_PRICE = 15
-    MAX_DISAGREEMENT_CENTS = 25
-    MAX_FAIR_MARKET_RATIO = 3.0
+    _defaults = dict(MIN_EDGE_CENTS=15, MIN_YES_PRICE=15, MIN_NO_PRICE=15,
+                     MIN_CONFIDENCE_SCORE=0.6, MODEL_WEIGHT=0.3,
+                     MAX_DISAGREEMENT_CENTS=25, MAX_FAIR_MARKET_RATIO=3.0)
+
+MIN_EDGE_CENTS = _env_int("MIN_EDGE_CENTS", _defaults["MIN_EDGE_CENTS"], minimum=0)
+MIN_YES_PRICE = _env_int("MIN_YES_PRICE", _defaults["MIN_YES_PRICE"], minimum=0)
+MIN_NO_PRICE = _env_int("MIN_NO_PRICE", _defaults["MIN_NO_PRICE"], minimum=0)
+# Bounded knobs: confidence and the blend weight are in [0,1] by definition; an
+# out-of-range MODEL_WEIGHT would extrapolate past / invert the model signal.
+MIN_CONFIDENCE_SCORE = _env_float("MIN_CONFIDENCE_SCORE", _defaults["MIN_CONFIDENCE_SCORE"], minimum=0.0, maximum=1.0)
+MODEL_WEIGHT = _env_float("MODEL_WEIGHT", _defaults["MODEL_WEIGHT"], minimum=0.0, maximum=1.0)
+MAX_DISAGREEMENT_CENTS = _env_int("MAX_DISAGREEMENT_CENTS", _defaults["MAX_DISAGREEMENT_CENTS"], minimum=0)
+# A fair/market ratio cap below 1.0 (or inf) would disable the filter; require >= 1.0.
+MAX_FAIR_MARKET_RATIO = _env_float("MAX_FAIR_MARKET_RATIO", _defaults["MAX_FAIR_MARKET_RATIO"], minimum=1.0)
 
 # ── Risk management ──────────────────────────────────────────────────────
 
@@ -135,10 +202,10 @@ CORRELATION_GROUPS = {
     'desert': ['PHX'],
     'north_central': ['MIN'],
 }
-MAX_PER_GROUP = 2
-MAX_PER_CITY_DATE = 1
-MAX_DAILY_LOSS_CENTS = 500
-MAX_WEEKLY_LOSS_CENTS = 1000
+MAX_PER_GROUP = _env_int("MAX_PER_GROUP", 2, minimum=0)
+MAX_PER_CITY_DATE = _env_int("MAX_PER_CITY_DATE", 1, minimum=0)
+MAX_DAILY_LOSS_CENTS = _env_int("MAX_DAILY_LOSS_CENTS", 500, minimum=0)
+MAX_WEEKLY_LOSS_CENTS = _env_int("MAX_WEEKLY_LOSS_CENTS", 1000, minimum=0)
 CIRCUIT_BREAKER_ALERT_INTERVAL = 3600  # seconds
 
 # ── City × season standard deviations (°F) ──────────────────────────────
