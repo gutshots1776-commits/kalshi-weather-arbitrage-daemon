@@ -295,6 +295,14 @@ size = f* · 0.25               # quarter-Kelly fraction of bankroll
 ```
 Where `p` = fair probability, `q = 1 − p`, `b = payout/cost = (100 − price)/price`. The result is capped by `MAX_COST_PER_TRADE`, `MAX_CONTRACTS`, and a balance reserve.
 
+### Settlement & Feedback Loop
+
+When Kalshi marks a market settled, the daemon records win/loss and realized P&L, then closes the learning loop:
+
+- **Actual high temperature** is read from NOAA station observations, windowed by the city's **Local Standard Time (LST) day** — the same NWS climatological day Kalshi settles on. LST is used year-round (not the DST-shifted civil day, and not a UTC calendar day), so a reading just after local-clock midnight during summer correctly belongs to the *previous* settlement day. See `kalshi/timeutils.py`.
+- That observed high becomes the **label** that scores each provider's forecast for the day, feeding the dynamic accuracy reweighting described above (persisted to `weather_accuracy.json`).
+- Each position's predicted win-probability and realized outcome are appended to `kalshi_settlement_log.jsonl`, which `analyze_calibration.py` consumes for the Brier-score / reliability / edge-realization report.
+
 ---
 
 ## Monitoring
