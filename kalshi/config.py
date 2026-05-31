@@ -11,15 +11,62 @@ from pathlib import Path
 BASE_DIR = Path(__file__).parent.parent
 
 
-def _load_env():
-    """Load .env file into os.environ (does not override existing vars)."""
-    env_path = BASE_DIR / ".env"
-    if env_path.exists():
-        for line in env_path.read_text().splitlines():
-            line = line.strip()
-            if line and not line.startswith("#") and "=" in line:
-                k, v = line.split("=", 1)
-                os.environ.setdefault(k.strip(), v.strip())
+def _strip_inline_comment(value):
+    """Strip an unquoted trailing ``# comment`` from a .env value.
+
+    A ``#`` only begins a comment when it is outside quotes and is either at the
+    start of the value or preceded by whitespace, so tokens that legitimately
+    contain ``#`` are preserved. This prevents the classic footgun where
+    ``PAPER_TRADING=true  # note`` parses as the literal ``"true  # note"`` and
+    silently disables paper-trading mode (``"true  # note" != "true"``).
+    """
+    in_single = in_double = False
+    for i, ch in enumerate(value):
+        if ch == "'" and not in_double:
+            in_single = not in_single
+        elif ch == '"' and not in_single:
+            in_double = not in_double
+        elif ch == "#" and not in_single and not in_double:
+            if i == 0 or value[i - 1] in (" ", "\t"):
+                return value[:i]
+    return value
+
+
+def _parse_env_line(line):
+    """Parse one .env line into a ``(key, value)`` pair, or ``None`` to skip it.
+
+    Handles ``export KEY=value``, surrounding single/double quotes, and inline
+    comments. Returns ``None`` for blank lines, full-line comments, and lines
+    with no ``=`` or an empty key.
+    """
+    line = line.strip()
+    if not line or line.startswith("#") or "=" not in line:
+        return None
+    if line.startswith("export "):
+        line = line[len("export "):].lstrip()
+    key, value = line.split("=", 1)
+    key = key.strip()
+    if not key:
+        return None
+    value = _strip_inline_comment(value).strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
+        value = value[1:-1]  # strip matching surrounding quotes
+    return key, value
+
+
+def _load_env(env_path=None):
+    """Load a .env file into ``os.environ`` without overriding existing vars.
+
+    Pass ``env_path`` to load a specific file (used in tests); defaults to
+    ``<repo>/.env``. Missing files are silently ignored.
+    """
+    env_path = Path(env_path) if env_path else BASE_DIR / ".env"
+    if not env_path.exists():
+        return
+    for raw_line in env_path.read_text().splitlines():
+        parsed = _parse_env_line(raw_line)
+        if parsed is not None:
+            os.environ.setdefault(parsed[0], parsed[1])
 
 
 _load_env()

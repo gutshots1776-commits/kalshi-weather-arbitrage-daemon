@@ -17,9 +17,12 @@ kalshi_private.pem
 *.txt
 # ...but keep project files that happen to use these extensions
 !requirements.txt
+!requirements-dev.txt
 
 # Python
 __pycache__/
+.pytest_cache/
+.ruff_cache/
 *.py[cod]
 *$py.class
 *.so
