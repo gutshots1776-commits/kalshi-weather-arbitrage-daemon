@@ -3,3 +3,8 @@
 
 requests>=2.31.0       # HTTP client for Kalshi, NOAA, and Open-Meteo APIs
 cryptography>=42.0.0   # RSA-PSS request signing for the Kalshi API
+
+# Settlement windows observations by the city's local-standard-time day via the
+# stdlib `zoneinfo`, which needs an IANA tz database. Linux/macOS ship one;
+# Windows does not, so pull in the first-party fallback there only.
+tzdata>=2024.1 ; platform_system == "Windows"
