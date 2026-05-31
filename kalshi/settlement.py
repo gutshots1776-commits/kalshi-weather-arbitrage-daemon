@@ -19,12 +19,17 @@ from kalshi.probability import MONTH_MAP
 from kalshi.state import record_pnl
 from kalshi.logger import log, log_paper_trade
 from kalshi.notifications import notify_settlement
+from kalshi.timeutils import lst_day_utc_window, daily_high_f_from_observations
 
 
 # ── NOAA observations for actual high temp ───────────────────────────────
 
 def fetch_actual_high_temp(city, target_date):
     """Fetch the observed high temperature from NOAA for a city/date.
+
+    The observation window is the city's Local Standard Time day — the same
+    climatological day the NWS (and therefore Kalshi) uses to settle these
+    markets — not the UTC calendar day. See ``kalshi.timeutils`` for why.
 
     Returns temperature in °F, or None on failure.
     """
@@ -35,26 +40,36 @@ def fetch_actual_high_temp(city, target_date):
             return None
 
         station = city_cfg['station']
+        tz_name = city_cfg.get('timezone')
         date_str = target_date.strftime("%Y-%m-%d")
-        start_time = f"{date_str}T00:00:00Z"
-        end_time = f"{date_str}T23:59:59Z"
+
+        window = lst_day_utc_window(tz_name, target_date)
+        if window is None:
+            log(f"  No usable timezone for {city} ({tz_name!r}); cannot window observations")
+            return None
+        start_utc, end_utc = window
 
         url = f"https://api.weather.gov/stations/{station}/observations"
-        params = {'start': start_time, 'end': end_time}
+        # Server-side filter to the LST day (UTC bounds); limit covers a full
+        # day of ~5-minute ASOS observations. The window is half-open [start, end).
+        params = {'start': start_utc.isoformat(), 'end': end_utc.isoformat(), 'limit': 500}
         headers = {'User-Agent': 'KaelWeatherBot/2.0'}
 
         r = requests.get(url, params=params, headers=headers, timeout=15)
         r.raise_for_status()
 
-        temps_f = []
-        for obs in r.json().get('features', []):
-            temp_c = obs.get('properties', {}).get('temperature', {}).get('value')
-            if temp_c is not None:
-                temps_f.append((temp_c * 9 / 5) + 32)
+        features = r.json().get('features', [])
+        if len(features) >= 500:
+            # Hit the API's max page size. Observations come newest-first, so any
+            # dropped rows are the oldest (overnight) ones — never the mid-afternoon
+            # high — but log it so a silently-capped day is at least visible.
+            log(f"  Note: {station} hit the 500-observation cap for {date_str}"
+                f" (LST day); using the most recent 500 — daily high is unaffected")
 
-        if temps_f:
-            actual_high = max(temps_f)
-            log(f"  Actual high for {city} on {date_str}: {actual_high:.1f}°F")
+        actual_high = daily_high_f_from_observations(features, tz_name, target_date)
+
+        if actual_high is not None:
+            log(f"  Actual high for {city} on {date_str} (LST day): {actual_high:.1f}°F")
             return actual_high
 
         log(f"  No valid observations for {station} on {date_str}")
