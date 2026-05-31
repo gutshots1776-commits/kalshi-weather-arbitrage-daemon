@@ -86,7 +86,11 @@ def fair_probability(forecast_temp, ensemble_details, floor_strike, cap_strike,
     at the scanner level (adjusted_edge = raw_edge * confidence) to avoid
     double-counting.
     """
-    if not forecast_temp:
+    # A forecast of exactly 0.0°F is a legitimate winter high, so guard on None
+    # (and non-finite, e.g. a NaN from a provider) explicitly. The old
+    # `if not forecast_temp` treated 0.0°F as a missing forecast and mis-priced
+    # it to 0.5.
+    if forecast_temp is None or not math.isfinite(forecast_temp):
         return 0.5
 
     if city and target_date:
@@ -107,10 +111,19 @@ def fair_probability(forecast_temp, ensemble_details, floor_strike, cap_strike,
         adjusted_std = 1.0
 
     if strike_type == 'less':
+        if cap_strike is None:
+            log("ERROR: 'less' strike with no cap_strike, returning 0.5")
+            return 0.5
         return normal_cdf((cap_strike - forecast_temp) / adjusted_std)
     elif strike_type == 'greater':
+        if floor_strike is None:
+            log("ERROR: 'greater' strike with no floor_strike, returning 0.5")
+            return 0.5
         return 1.0 - normal_cdf((floor_strike - forecast_temp) / adjusted_std)
     elif strike_type == 'between':
+        if floor_strike is None or cap_strike is None:
+            log("ERROR: 'between' strike missing a bound, returning 0.5")
+            return 0.5
         z1 = (floor_strike - forecast_temp) / adjusted_std
         z2 = (cap_strike - forecast_temp) / adjusted_std
         return normal_cdf(z2) - normal_cdf(z1)
