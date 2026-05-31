@@ -166,10 +166,33 @@ def test_fair_prob_missing_forecast_returns_half():
     assert fair_probability(None, {}, None, 80.0, strike_type="less") == 0.5
 
 
-@pytest.mark.xfail(reason="known bug: 0.0F is a valid winter high but `if not forecast_temp` treats it as missing", strict=True)
 def test_fair_prob_zero_degree_forecast_is_not_treated_as_missing():
     # A 0.0°F forecast well below an 80°F cap should price near 1.0, not 0.5.
+    # (Regression guard for the `if not forecast_temp` truthiness footgun.)
     assert fair_probability(0.0, {}, None, 80.0, std=2.0, days_ahead=2, strike_type="less") > 0.99
+
+
+def test_fair_prob_zero_degree_forecast_across_strike_types():
+    # 0.0°F vs an 80°F cap: P(less) ~ 1, P(greater above 80) ~ 0, and a band
+    # well above 0 has ~0 mass — none of these should collapse to the 0.5
+    # "missing forecast" sentinel.
+    assert fair_probability(0.0, {}, None, 80.0, std=2.0, days_ahead=2, strike_type="less") > 0.99
+    assert fair_probability(0.0, {}, 80.0, None, std=2.0, days_ahead=2, strike_type="greater") < 0.01
+    assert fair_probability(0.0, {}, 70.0, 80.0, std=2.0, days_ahead=2, strike_type="between") < 0.01
+
+
+def test_fair_prob_nan_forecast_returns_half():
+    # A non-finite forecast (e.g. a provider NaN) must not propagate to a NaN
+    # price; it is treated as missing.
+    assert fair_probability(float("nan"), {}, None, 80.0, std=2.0, strike_type="less") == 0.5
+
+
+def test_fair_prob_missing_required_strike_returns_half():
+    # A valid forecast but a None strike for the requested side returns 0.5
+    # instead of raising (the 0.0 fix makes valid forecasts reach this arithmetic).
+    assert fair_probability(50.0, {}, None, None, std=2.0, strike_type="less") == 0.5
+    assert fair_probability(50.0, {}, None, None, std=2.0, strike_type="greater") == 0.5
+    assert fair_probability(50.0, {}, 70.0, None, std=2.0, strike_type="between") == 0.5
 
 
 # ── kelly_size (quarter-Kelly for binary odds) ───────────────────────────
