@@ -16,13 +16,19 @@ import logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+_HTTP_JSON_CACHE = {}
+
+def _cache_key(url: str, params: dict) -> tuple:
+    return (url, tuple(sorted((str(k), str(v)) for k, v in params.items())))
+
+
 class WeatherProvider(ABC):
     """Abstract base class for weather data providers."""
     
     def __init__(self, name: str):
         self.name = name
         self.last_request_time = 0
-        self.rate_limit_delay = 0.3  # seconds between requests
+        self.rate_limit_delay = float(os.getenv('WEATHER_PROVIDER_RATE_LIMIT_DELAY_SECONDS', '0.75'))  # seconds between requests
         
     @abstractmethod
     def get_forecast_high(self, location: Dict, target_date: datetime) -> Optional[float]:
@@ -36,6 +42,31 @@ class WeatherProvider(ABC):
             time.sleep(self.rate_limit_delay - elapsed)
         self.last_request_time = time.time()
 
+
+
+    def _cached_get_json(self, url: str, params: dict, ttl_seconds: int | None = None) -> dict:
+        """GET JSON with TTL cache to reduce Open-Meteo 429s."""
+        if ttl_seconds is None:
+            ttl_seconds = int(os.getenv("OPEN_METEO_CACHE_TTL_SECONDS", "900"))
+
+        key = _cache_key(url, params)
+        now = time.time()
+        cached = _HTTP_JSON_CACHE.get(key)
+
+        if cached and now - cached["ts"] <= ttl_seconds:
+            return cached["data"]
+
+        self._rate_limit()
+        r = requests.get(url, params=params, timeout=15)
+
+        if r.status_code == 429 and cached:
+            logger.warning(f"{self.name}: using stale cached response after 429")
+            return cached["data"]
+
+        r.raise_for_status()
+        data = r.json()
+        _HTTP_JSON_CACHE[key] = {"ts": now, "data": data}
+        return data
 
 class NOAAProvider(WeatherProvider):
     """NOAA National Weather Service provider."""
@@ -107,9 +138,8 @@ class OpenMeteoGFSProvider(WeatherProvider):
                 'end_date': date_str,
                 'timezone': location.get('timezone', 'auto'),
             }
-            r = requests.get(self.base_url, params=params, timeout=15)
-            r.raise_for_status()
-            temps = r.json().get('daily', {}).get('temperature_2m_max', [])
+            data = self._cached_get_json(self.base_url, params=params)
+            temps = data.get('daily', {}).get('temperature_2m_max', [])
             if temps and temps[0] is not None:
                 logger.info(f"OpenMeteo GFS forecast for {date_str}: {temps[0]}°F")
                 return float(temps[0])
@@ -139,9 +169,8 @@ class OpenMeteoICONProvider(WeatherProvider):
                 'end_date': date_str,
                 'timezone': location.get('timezone', 'auto'),
             }
-            r = requests.get(self.base_url, params=params, timeout=15)
-            r.raise_for_status()
-            temps = r.json().get('daily', {}).get('temperature_2m_max', [])
+            data = self._cached_get_json(self.base_url, params=params)
+            temps = data.get('daily', {}).get('temperature_2m_max', [])
             if temps and temps[0] is not None:
                 logger.info(f"OpenMeteo ICON forecast for {date_str}: {temps[0]}°F")
                 return float(temps[0])
@@ -171,9 +200,8 @@ class OpenMeteoECMWFProvider(WeatherProvider):
                 'end_date': date_str,
                 'timezone': location.get('timezone', 'auto'),
             }
-            r = requests.get(self.base_url, params=params, timeout=15)
-            r.raise_for_status()
-            temps = r.json().get('daily', {}).get('temperature_2m_max', [])
+            data = self._cached_get_json(self.base_url, params=params)
+            temps = data.get('daily', {}).get('temperature_2m_max', [])
             if temps and temps[0] is not None:
                 logger.info(f"OpenMeteo ECMWF forecast for {date_str}: {temps[0]}°F")
                 return float(temps[0])
@@ -203,9 +231,8 @@ class OpenMeteoGEMProvider(WeatherProvider):
                 'end_date': date_str,
                 'timezone': location.get('timezone', 'auto'),
             }
-            r = requests.get(self.base_url, params=params, timeout=15)
-            r.raise_for_status()
-            temps = r.json().get('daily', {}).get('temperature_2m_max', [])
+            data = self._cached_get_json(self.base_url, params=params)
+            temps = data.get('daily', {}).get('temperature_2m_max', [])
             if temps and temps[0] is not None:
                 logger.info(f"OpenMeteo GEM forecast for {date_str}: {temps[0]}°F")
                 return float(temps[0])

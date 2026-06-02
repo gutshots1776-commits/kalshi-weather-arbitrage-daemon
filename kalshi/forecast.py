@@ -4,6 +4,7 @@ Ensemble forecast interface.
 Wraps weather_providers.build_ensemble() and adds NOAA staleness detection
 and model-bias correction.
 """
+import os
 from datetime import datetime, timezone
 
 from weather_providers import build_ensemble, CITY_CONFIGS
@@ -52,7 +53,18 @@ def get_staleness_adjusted_forecast(city_cfg, target_date, city_code=None):
 
 
 def get_poll_interval():
-    """Return a smart polling interval (seconds) based on model-update times."""
+    """Return polling interval in seconds.
+
+    Set POLL_INTERVAL_SECONDS=120 on Render to scan every 2 minutes.
+    If unset, fall back to the original smart polling schedule.
+    """
+    override = os.getenv("POLL_INTERVAL_SECONDS", "").strip()
+    if override:
+        try:
+            return max(30, int(float(override)))
+        except Exception:
+            pass
+
     hour = datetime.now().hour
     if hour in (4, 5, 10, 11, 16, 17, 22, 23):
         return 300   # 5 min during model updates
